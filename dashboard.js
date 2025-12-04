@@ -1,9 +1,9 @@
-// dashboard.js — FINAL HWID-LOCKED VERSION (2025)
+// dashboard.js — RAILWAY-FIXED VERSION (Listens on Correct Port)
 require('dotenv').config();
 const express = require('express');
 const db = require('./db.js');
 const app = express();
-const PORT = process.env.DASHBOARD_PORT || 4000;
+const PORT = process.env.PORT || 4000;  // ← FIXED: Uses Railway's PORT env var
 const PASS = process.env.DASHBOARD_PASSWORD || "CertifiedHater";
 
 app.use(express.json());
@@ -34,7 +34,7 @@ app.post('/login', (req, res) => {
     }
 });
 
-// === MAIN DASHBOARD (now shows HWID) ===
+// === MAIN DASHBOARD ===
 app.get('/', (req, res) => {
     db.all("SELECT * FROM keys ORDER BY generated_at DESC LIMIT 200", (err, keys) => {
         db.get("SELECT COUNT(*) as total, SUM(CASE WHEN used = 1 THEN 1 ELSE 0 END) as used FROM keys", (e, stats) => {
@@ -84,7 +84,7 @@ app.get('/', (req, res) => {
     });
 });
 
-// === REDEEM API — NOW WITH FULL HWID LOCK ===
+// === REDEEM API — HWID LOCK ===
 app.post('/redeem', (req, res) => {
     const { key, user, hwid } = req.body || {};
     if (!key || !hwid) {
@@ -99,12 +99,10 @@ app.post('/redeem', (req, res) => {
             return res.json({ success: false, message: "Key expired" });
         }
 
-        // If key already has HWID and it's different → deny
         if (row.hwid && row.hwid !== hwid) {
             return res.json({ success: false, message: "Key already bound to another device!" });
         }
 
-        // Lock key to this HWID
         db.run("UPDATE keys SET used = 1, used_by = ?, hwid = ?, used_at = CURRENT_TIMESTAMP WHERE key = ?", 
             [user || "RobloxUser", hwid, key]);
 
@@ -112,8 +110,9 @@ app.post('/redeem', (req, res) => {
     });
 });
 
+// FIXED: Listen on 0.0.0.0 for Railway + Use env PORT
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Dashboard running → http://0.0.0.0:${PORT}`);
+    console.log(`Dashboard running on port ${PORT}`);
     console.log(`Login password: ${PASS}`);
     console.log(`HWID lock: ACTIVE`);
 });
