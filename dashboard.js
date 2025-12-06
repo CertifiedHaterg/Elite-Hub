@@ -10,7 +10,7 @@ app.use(express.urlencoded({ extended: true }));
 
 let loggedin = false;
 
-// LOGIN PAGE
+// LOGIN
 app.use((req, res, next) => {
     if (['/login', '/redeem', '/generate', '/api/keys'].includes(req.path)) return next();
     if (loggedin) return next();
@@ -33,7 +33,7 @@ app.post('/login', (req, res) => {
     }
 });
 
-// MAIN DASHBOARD — SHOWS ALL KEYS
+// MAIN DASHBOARD — SHOWS EXPIRY
 app.get('/', (req, res) => {
     db.all("SELECT * FROM keys ORDER BY generated_at DESC", (err, keys) => {
         db.get("SELECT COUNT(*) as total, SUM(CASE WHEN used = 1 THEN 1 ELSE 0 END) as used FROM keys", (e, stats) => {
@@ -51,24 +51,24 @@ app.get('/', (req, res) => {
                         th{background:#003300;}
                         .stats{font-size:22px;margin:20px 0;}
                         code{background:#000;padding:4px 8px;border-radius:4px;}
-                        button{padding:10px 20px;margin:5px;font-size:16px;}
                     </style>
                 </head>
                 <body>
-                    <h1>Elite Key System — HWID LOCKED</h1>
+                    <h1>Elite Key System — HWID + EXPIRY</h1>
                     <div class="stats">
                         Total: <b>${stats?.total || 0}</b> | Used: <b style="color:red">${stats?.used || 0}</b> | Unused: <b>${unused}</b>
                     </div>
                     <button onclick="location.reload()">Refresh</button>
                     <button onclick="loggedin=false;location.href='/'">Logout</button>
                     <table>
-                        <tr><th>Key</th><th>Status</th><th>Used By</th><th>HWID</th><th>Generated</th></tr>
+                        <tr><th>Key</th><th>Status</th><th>Used By</th><th>HWID</th><th>Expires</th><th>Generated</th></tr>
                         ${keys.map(k => `
                             <tr style="${k.used ? 'opacity:0.5' : ''}">
                                 <td><code>${k.key}</code></td>
                                 <td>${k.used ? 'Used' : '<b>Valid</b>'}</td>
                                 <td>${k.used_by || '-'}</td>
                                 <td><code>${k.hwid || '-'}</code></td>
+                                <td>${k.expiry ? new Date(k.expiry).toLocaleString() : 'Never'}</td>
                                 <td>${new Date(k.generated_at).toLocaleString()}</td>
                             </tr>
                         `).join('')}
@@ -87,29 +87,27 @@ app.post('/redeem', (req, res) => {
 
     db.get("SELECT * FROM keys WHERE key = ? AND used = 0", [key], (err, row) => {
         if (!row) return res.json({ success: false, message: "Invalid or used key" });
+        if (row.expiry && new Date(row.expiry) < new Date()) return res.json({ success: false, message: "Key expired" });
         if (row.hwid && row.hwid !== hwid) return res.json({ success: false, message: "Key bound to another device!" });
 
         db.run("UPDATE keys SET used = 1, used_by = ?, hwid = ?, used_at = CURRENT_TIMESTAMP WHERE key = ?", 
             [user || "Roblox", hwid, key]);
 
-        res.json({ success: true, message: "Access granted & HWID locked" });
+        res.json({ success: true, message: "Access granted" });
     });
 });
 
-// DISCORD BOT KEY GENERATOR — THIS WAS MISSING (NOW FIXED)
+// DISCORD BOT GENERATOR — NOW SUPPORTS EXPIRY
 app.post('/generate', (req, res) => {
-    const { keys, password } = req.body;
+    const { keys, password, expiry } = req.body;
     if (password !== PASS) return res.status(403).send("Wrong password");
     if (!Array.isArray(keys)) return res.status(400).send("Invalid keys");
 
-    const stmt = db.prepare("INSERT OR IGNORE INTO keys (key) VALUES (?)");
-    let added = 0;
-    keys.forEach(k => {
-        stmt.run(k, () => added++);
-    });
+    const stmt = db.prepare("INSERT OR IGNORE INTO keys (key, expiry) VALUES (?, ?)");
+    keys.forEach(k => stmt.run(k, expiry || null));
     stmt.finalize();
 
-    res.send(`Added ${added} keys`);
+    res.send(`Added ${keys.length} keys`);
 });
 
 // /keys API FOR DISCORD BOT
@@ -126,7 +124,6 @@ app.get('/api/keys', (req, res) => {
     });
 });
 
-// START SERVER
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`Elite Dashboard LIVE → https://elite-hub.onrender.com`);
     console.log(`Password: ${PASS}`);
