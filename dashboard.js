@@ -1,6 +1,23 @@
 require('dotenv').config();
 const express = require('express');
-const db = require('./db.js');
+const sqlite3 = require('sqlite3').verbose();
+
+// PERSISTENT DATABASE ON RENDER
+const db = new sqlite3.Database('/tmp/keys.db');
+
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT UNIQUE,
+        used INTEGER DEFAULT 0,
+        used_by TEXT,
+        hwid TEXT,
+        expiry TEXT,
+        generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        used_at DATETIME
+    )`);
+});
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 const PASS = process.env.DASHBOARD_PASSWORD || "CertifiedHater";
@@ -33,7 +50,7 @@ app.post('/login', (req, res) => {
     }
 });
 
-// MAIN DASHBOARD — SHOWS EXPIRY
+// MAIN DASHBOARD — NOW SHOWS EXPIRY CORRECTLY
 app.get('/', (req, res) => {
     db.all("SELECT * FROM keys ORDER BY generated_at DESC", (err, keys) => {
         db.get("SELECT COUNT(*) as total, SUM(CASE WHEN used = 1 THEN 1 ELSE 0 END) as used FROM keys", (e, stats) => {
@@ -62,16 +79,23 @@ app.get('/', (req, res) => {
                     <button onclick="loggedin=false;location.href='/'">Logout</button>
                     <table>
                         <tr><th>Key</th><th>Status</th><th>Used By</th><th>HWID</th><th>Expires</th><th>Generated</th></tr>
-                        ${keys.map(k => `
-                            <tr style="${k.used ? 'opacity:0.5' : ''}">
-                                <td><code>${k.key}</code></td>
-                                <td>${k.used ? 'Used' : '<b>Valid</b>'}</td>
-                                <td>${k.used_by || '-'}</td>
-                                <td><code>${k.hwid || '-'}</code></td>
-                                <td>${k.expiry ? new Date(k.expiry).toLocaleString() : 'Never'}</td>
-                                <td>${new Date(k.generated_at).toLocaleString()}</td>
-                            </tr>
-                        `).join('')}
+                        ${keys.map(k => {
+                            const expiryText = k.expiry 
+                                ? new Date(k.expiry) < new Date() 
+                                    ? '<span style="color:red">EXPIRED</span>' 
+                                    : new Date(k.expiry).toLocaleString()
+                                : 'Never';
+                            return `
+                                <tr style="${k.used ? 'opacity:0.5' : ''}">
+                                    <td><code>${k.key}</code></td>
+                                    <td>${k.used ? 'Used' : '<b>Valid</b>'}</td>
+                                    <td>${k.used_by || '-'}</td>
+                                    <td><code>${k.hwid || '-'}</code></td>
+                                    <td>${expiryText}</td>
+                                    <td>${new Date(k.generated_at).toLocaleString()}</td>
+                                </tr>
+                            `;
+                        }).join('')}
                     </table>
                 </body>
                 </html>
@@ -80,10 +104,10 @@ app.get('/', (req, res) => {
     });
 });
 
-// REDEEM (FOR SCRIPT)
+// REDEEM
 app.post('/redeem', (req, res) => {
     const { key, user, hwid } = req.body || {};
-    if (!key || !hwid) return res.json({ success: false, message: "Missing key or HWID" });
+    if (!key || !hwid) return res.json({ success: false, message: "Missing data" });
 
     db.get("SELECT * FROM keys WHERE key = ? AND used = 0", [key], (err, row) => {
         if (!row) return res.json({ success: false, message: "Invalid or used key" });
@@ -97,28 +121,27 @@ app.post('/redeem', (req, res) => {
     });
 });
 
-// DISCORD BOT GENERATOR — NOW SUPPORTS EXPIRY
+// GENERATE — NOW PROPERLY SAVES EXPIRY
 app.post('/generate', (req, res) => {
     const { keys, password, expiry } = req.body;
     if (password !== PASS) return res.status(403).send("Wrong password");
     if (!Array.isArray(keys)) return res.status(400).send("Invalid keys");
 
     const stmt = db.prepare("INSERT OR IGNORE INTO keys (key, expiry) VALUES (?, ?)");
-    keys.forEach(k => stmt.run(k, expiry || null));
+    let added = 0;
+    keys.forEach(k => {
+        stmt.run(k, expiry || null, () => added++);
+    });
     stmt.finalize();
 
-    res.send(`Added ${keys.length} keys`);
+    res.send(`Added ${added} keys${expiry ? ' with expiry' : ''}`);
 });
 
-// /keys API FOR DISCORD BOT
+// /keys API
 app.get('/api/keys', (req, res) => {
     if (req.headers['x-password'] !== PASS) return res.status(403).send("No");
-    const page = parseInt(req.query.page) || 0;
-    const limit = 15;
-    const offset = page * limit;
-
     db.get("SELECT COUNT(*) as total FROM keys WHERE used = 0", (err, count) => {
-        db.all(`SELECT key FROM keys WHERE used = 0 ORDER BY generated_at DESC LIMIT ? OFFSET ?`, [limit, offset], (err, rows) => {
+        db.all("SELECT key FROM keys WHERE used = 0 ORDER BY generated_at DESC LIMIT 15", (err, rows) => {
             res.json({ total: count.total, keys: rows });
         });
     });
@@ -126,5 +149,4 @@ app.get('/api/keys', (req, res) => {
 
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`Elite Dashboard LIVE → https://elite-hub.onrender.com`);
-    console.log(`Password: ${PASS}`);
 });
